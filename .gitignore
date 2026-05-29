@@ -1,0 +1,18 @@
+# Built binaries
+xray-app
+xray-manager
+
+# Dependencies
+.npm-cache/
+
+# Editor
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Patch files
+*.patch
