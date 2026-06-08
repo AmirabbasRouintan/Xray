@@ -1813,13 +1813,29 @@ func (m model) updateServerRegions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		filtered := m.filteredRegionConfigs()
-		if len(filtered) > 0 && m.selectedItem >= 0 && m.selectedItem < len(filtered) {
-			cfg := filtered[m.selectedItem]
-			text := readConfigForCopy(cfg.Path)
-			if text != "" {
-				return m, func() tea.Msg {
-					clipboard.WriteAll(text)
-					return nil
+		if len(filtered) > 0 {
+			if len(m.selectedConfigs) > 0 {
+				var lines []string
+				for idx := range m.selectedConfigs {
+					if idx >= 0 && idx < len(filtered) {
+						lines = append(lines, readConfigForCopy(filtered[idx].Path))
+					}
+				}
+				if len(lines) > 0 {
+					return m, func() tea.Msg {
+						clipboard.WriteAll(strings.Join(lines, "\n"))
+						return nil
+					}
+				}
+			}
+			if m.selectedItem >= 0 && m.selectedItem < len(filtered) {
+				cfg := filtered[m.selectedItem]
+				text := readConfigForCopy(cfg.Path)
+				if text != "" {
+					return m, func() tea.Msg {
+						clipboard.WriteAll(text)
+						return nil
+					}
 				}
 			}
 		}
