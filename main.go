@@ -79,6 +79,12 @@ type model struct {
 	showFilter      bool
 	searchInput     textinput.Model
 	showSearch      bool
+	detecting       bool
+	detectTotal     int
+	detectDone      int
+	detectCh        chan tea.Msg
+	selectedRegion  string
+	regionOrder     []string
 }
 
 type ConfigInfo struct {
@@ -89,6 +95,8 @@ type ConfigInfo struct {
 	Server   string
 	Port     int
 	Ping     string
+	RealPing string
+	Region   string
 }
 
 type SubscriptionInfo struct {
@@ -117,7 +125,6 @@ type vmessConfig struct {
 	V    string `json:"v"`
 }
 
-// Additional config types for different proxy protocols
 type trojanConfig struct {
 	Password string `json:"password"`
 	Server   string `json:"server"`
@@ -137,6 +144,87 @@ type shadowsocksConfig struct {
 	Password string `json:"password"`
 	Plugin   string `json:"plugin,omitempty"`
 	Remark   string `json:"ps,omitempty"`
+}
+
+type hysteria2Config struct {
+	Server        string `json:"server"`
+	Port          int    `json:"port"`
+	Password      string `json:"password"`
+	SNI           string `json:"sni,omitempty"`
+	AllowInsecure bool   `json:"allowInsecure,omitempty"`
+	Obfs          string `json:"obfs,omitempty"`
+	ObfsPassword  string `json:"obfsPassword,omitempty"`
+	Remark        string `json:"ps,omitempty"`
+}
+
+type geoIPResult struct {
+	Country string `json:"country"`
+	CountryCode string `json:"countryCode"`
+	Region string `json:"regionName"`
+	City   string `json:"city"`
+	Query  string `json:"query"`
+	Status string `json:"status"`
+}
+
+func detectRegion(server string) string {
+	if server == "Unknown" || server == "" || net.ParseIP(server) == nil {
+		return "Unknown"
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://ip-api.com/json/%s?fields=status,country,countryCode,regionName,city,query", server))
+	if err != nil {
+		return "Unknown"
+	}
+	defer resp.Body.Close()
+	var result geoIPResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || result.Status != "success" {
+		return "Unknown"
+	}
+	if result.City != "" && result.City != result.Country {
+		return fmt.Sprintf("%s, %s", result.City, result.CountryCode)
+	}
+	return result.CountryCode
+}
+
+func (m model) detectAllRegions() model {
+	client := &http.Client{Timeout: 5 * time.Second}
+	for i := range m.configs {
+		if m.configs[i].Server == "Unknown" || m.configs[i].Server == "" {
+			m.configs[i].Region = "Unknown"
+			continue
+		}
+		if net.ParseIP(m.configs[i].Server) == nil {
+			m.configs[i].Region = "Domain"
+			continue
+		}
+		resp, err := client.Get(fmt.Sprintf("http://ip-api.com/json/%s?fields=status,country,countryCode,regionName,city,query", m.configs[i].Server))
+		if err != nil {
+			m.configs[i].Region = "Unknown"
+			continue
+		}
+		var result geoIPResult
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || result.Status != "success" {
+			m.configs[i].Region = "Unknown"
+			resp.Body.Close()
+			continue
+		}
+		resp.Body.Close()
+		region := ""
+		if result.City != "" && result.City != result.Country {
+			region = fmt.Sprintf("%s, %s", result.City, result.CountryCode)
+		} else {
+			region = result.CountryCode
+		}
+		m.configs[i].Region = region
+		time.Sleep(100 * time.Millisecond)
+	}
+	sort.SliceStable(m.configs, func(i, j int) bool {
+		if m.configs[i].Region != m.configs[j].Region {
+			return m.configs[i].Region < m.configs[j].Region
+		}
+		return parsePingMs(m.configs[i].Ping) < parsePingMs(m.configs[j].Ping)
+	})
+	return m
 }
 
 // Catppuccin Jade Color Palette
@@ -213,7 +301,7 @@ const xrayArt = `██╗  ██╗██████╗  █████╗ �
 func initialModel() model {
 	// Initialize textarea for paste config (multi-line)
 	ta := textarea.New()
-	ta.Placeholder = "Paste your proxy URL or JSON config here...\n\nSupports:\n• vless:// URLs\n• vmess:// URLs\n• trojan:// URLs\n• ss:// URLs (Shadowsocks)\n• JSON configurations\n• Multi-line content"
+	ta.Placeholder = "Paste your proxy URL or JSON config here...\n\nSupports:\n• vless:// URLs\n• vmess:// URLs\n• trojan:// URLs\n• ss:// URLs (Shadowsocks)\n• hysteria2:// URLs\n• JSON configurations\n• Multi-line content"
 	ta.Focus()
 	ta.SetWidth(70)
 	ta.SetHeight(12)
@@ -318,15 +406,28 @@ type latencyStarted struct {
 	configs []ConfigInfo
 	indices []int // nil = ping all configs
 	timeout time.Duration
+	isTCP   bool
 }
 
 type latencyResult struct {
 	server string
 	port   int
 	ping   string
+	isReal bool
 }
 
 type latencyFinished struct{}
+
+type regionDetectionStarted struct {
+	total int
+}
+
+type regionDetected struct {
+	index  int
+	region string
+}
+
+type regionDetectionFinished struct{}
 
 type shellSessionEnded struct {
 	config string
@@ -348,6 +449,42 @@ func (m model) readLatencyResult() tea.Cmd {
 	}
 }
 
+func (m model) readRegionResult() tea.Cmd {
+	return func() tea.Msg {
+		msg, ok := <-m.detectCh
+		if !ok {
+			return regionDetectionFinished{}
+		}
+		return msg
+	}
+}
+
+func runRegionDetection(configs []ConfigInfo, ch chan<- tea.Msg) {
+	defer close(ch)
+	client := &http.Client{Timeout: 5 * time.Second}
+	for i := range configs {
+		region := "Unknown"
+		if configs[i].Server != "Unknown" && configs[i].Server != "" && net.ParseIP(configs[i].Server) != nil {
+			resp, err := client.Get(fmt.Sprintf("http://ip-api.com/json/%s?fields=status,country,countryCode,regionName,city,query", configs[i].Server))
+			if err == nil {
+				var result geoIPResult
+				if err := json.NewDecoder(resp.Body).Decode(&result); err == nil && result.Status == "success" {
+					if result.City != "" && result.City != result.Country {
+						region = fmt.Sprintf("%s, %s", result.City, result.CountryCode)
+					} else {
+						region = result.CountryCode
+					}
+				}
+				resp.Body.Close()
+			}
+		} else if configs[i].Server != "Unknown" && configs[i].Server != "" {
+			region = "Domain"
+		}
+		ch <- regionDetected{index: i, region: region}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 func runLatencyWorkers(configs []ConfigInfo, ch chan<- tea.Msg, indices []int, timeout time.Duration) {
 	defer close(ch)
 	binary, err := findXrayBinary()
@@ -360,7 +497,7 @@ func runLatencyWorkers(configs []ConfigInfo, ch chan<- tea.Msg, indices []int, t
 			}
 		}
 		for _, idx := range pingFrom {
-			ch <- latencyResult{server: configs[idx].Server, port: configs[idx].Port, ping: "ERR"}
+			ch <- latencyResult{server: configs[idx].Server, port: configs[idx].Port, ping: "ERR", isReal: true}
 		}
 		return
 	}
@@ -382,7 +519,7 @@ func runLatencyWorkers(configs []ConfigInfo, ch chan<- tea.Msg, indices []int, t
 				if err == nil {
 					ping = latency
 				}
-				ch <- latencyResult{server: job.server, port: job.port, ping: ping}
+				ch <- latencyResult{server: job.server, port: job.port, ping: ping, isReal: true}
 			}
 		}()
 	}
@@ -404,6 +541,51 @@ func runLatencyWorkers(configs []ConfigInfo, ch chan<- tea.Msg, indices []int, t
 		}
 		close(jobs)
 	}()
+
+	wg.Wait()
+}
+
+func runTCPPingWorkers(configs []ConfigInfo, ch chan<- tea.Msg, indices []int, timeout time.Duration) {
+	defer close(ch)
+
+	pingFrom := indices
+	if pingFrom == nil {
+		pingFrom = make([]int, len(configs))
+		for i := range configs {
+			pingFrom[i] = i
+		}
+	}
+
+	const wCount = 20
+	jobs := make(chan struct {
+		idx    int
+		server string
+		port   int
+	})
+	var wg sync.WaitGroup
+	for i := 0; i < wCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				ping := "ERR"
+				latency, err := tcpPingLatency(job.server, job.port, timeout)
+				if err == nil {
+					ping = latency
+				}
+				ch <- latencyResult{server: job.server, port: job.port, ping: ping, isReal: false}
+			}
+		}()
+	}
+
+	for _, idx := range pingFrom {
+		jobs <- struct {
+			idx    int
+			server string
+			port   int
+		}{idx: idx, server: configs[idx].Server, port: configs[idx].Port}
+	}
+	close(jobs)
 
 	wg.Wait()
 }
@@ -441,14 +623,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) { // Remove pointer rece
 		m.latencyDone = 0
 		m.analysis = fmt.Sprintf("Pinging %d configs... [0/%d]", msg.total, msg.total)
 		m.latencyCh = make(chan tea.Msg, msg.total)
-		go runLatencyWorkers(msg.configs, m.latencyCh, msg.indices, msg.timeout)
+		if msg.isTCP {
+			go runTCPPingWorkers(msg.configs, m.latencyCh, msg.indices, msg.timeout)
+		} else {
+			go runLatencyWorkers(msg.configs, m.latencyCh, msg.indices, msg.timeout)
+		}
 		return m, m.readLatencyResult()
 	case latencyResult:
 		// Find config by server:port
 		found := false
 		for i := range m.configs {
 			if m.configs[i].Server == msg.server && m.configs[i].Port == msg.port {
-				m.configs[i].Ping = msg.ping
+				if msg.isReal {
+					m.configs[i].RealPing = msg.ping
+				} else {
+					m.configs[i].Ping = msg.ping
+				}
 				found = true
 				break
 			}
@@ -461,10 +651,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) { // Remove pointer rece
 			m.analysis = fmt.Sprintf("Pinging... [%d/%d]", m.latencyDone, m.latencyTotal)
 			return m, m.readLatencyResult()
 		}
-		m.analysis = fmt.Sprintf("✅ Ping: %s — %s:%d", msg.ping, msg.server, msg.port)
+		pingType := "TCP"
+		if msg.isReal {
+			pingType = "Real"
+		}
+		m.analysis = fmt.Sprintf("✅ %s Ping: %s — %s:%d", pingType, msg.ping, msg.server, msg.port)
 		// Save single ping result
 		cache := loadPingCache()
-		cache[fmt.Sprintf("%s:%d", msg.server, msg.port)] = msg.ping
+		key := fmt.Sprintf("%s:%d", msg.server, msg.port)
+		if msg.isReal {
+			key += ":real"
+		}
+		cache[key] = msg.ping
 		savePingCache(cache)
 		return m, nil
 	case latencyFinished:
@@ -474,6 +672,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) { // Remove pointer rece
 			if cfg.Ping != "" {
 				cache[fmt.Sprintf("%s:%d", cfg.Server, cfg.Port)] = cfg.Ping
 			}
+			if cfg.RealPing != "" {
+				cache[fmt.Sprintf("%s:%d:real", cfg.Server, cfg.Port)] = cfg.RealPing
+			}
 		}
 		savePingCache(cache)
 		if m.latencyTotal > 0 {
@@ -482,11 +683,49 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) { // Remove pointer rece
 		m.latencyTotal = 0
 		m.latencyDone = 0
 		return m, nil
+	case regionDetectionStarted:
+		m.detecting = true
+		m.detectTotal = msg.total
+		m.detectDone = 0
+		m.detectCh = make(chan tea.Msg, msg.total)
+		go runRegionDetection(m.configs, m.detectCh)
+		return m, tea.Batch(m.spinner.Tick, m.readRegionResult())
+	case regionDetected:
+		if msg.index >= 0 && msg.index < len(m.configs) {
+			m.configs[msg.index].Region = msg.region
+		}
+		if m.detectCh != nil {
+			m.detectDone++
+			return m, m.readRegionResult()
+		}
+		return m, nil
+	case regionDetectionFinished:
+		m.detecting = false
+		m.detectTotal = 0
+		m.detectDone = 0
+		m.detectCh = nil
+		// Save region cache
+		cache := loadRegionCache()
+		for _, cfg := range m.configs {
+			if cfg.Region != "" {
+				key := fmt.Sprintf("%s:%d", cfg.Server, cfg.Port)
+				cache[key] = cfg.Region
+			}
+		}
+		saveRegionCache(cache)
+		// Sort by region after all detected
+		sort.SliceStable(m.configs, func(i, j int) bool {
+			if m.configs[i].Region != m.configs[j].Region {
+				return m.configs[i].Region < m.configs[j].Region
+			}
+			return parsePingMs(m.configs[i].Ping) < parsePingMs(m.configs[j].Ping)
+		})
+		return m, nil
 	case shellSessionEnded:
 		m.analysis = successStyle.Render(fmt.Sprintf("✅ Shell proxy session ended. (%s)", msg.config))
 		return m, nil
 	case spinner.TickMsg:
-		if m.isLoading {
+		if m.isLoading || m.detecting {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
@@ -498,7 +737,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) { // Remove pointer rece
 		m = m.applyResponsiveLayout()
 		return m, nil
 	case tea.MouseMsg:
-		if m.isLoading || m.pinging || m.screen != "connectServer" {
+		if m.isLoading || m.pinging {
+			return m, nil
+		}
+		if m.screen != "connectServer" && m.screen != "serverRegions" {
 			return m, nil
 		}
 		if msg.Action != tea.MouseActionPress {
@@ -511,18 +753,82 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) { // Remove pointer rece
 				m.ensureVisible()
 			}
 		case tea.MouseButtonWheelDown:
-			flen := len(m.filteredConfigs())
-			if m.selectedItem < flen-1 {
-				m.selectedItem++
-				m.ensureVisible()
+			if m.screen == "connectServer" {
+				flen := len(m.filteredConfigs())
+				if m.selectedItem < flen-1 {
+					m.selectedItem++
+					m.ensureVisible()
+				}
+			} else if m.screen == "serverRegions" {
+				flen := len(m.filteredRegionConfigs())
+				if m.selectedItem < flen-1 {
+					m.selectedItem++
+					m.ensureVisible()
+				}
 			}
 		case tea.MouseButtonLeft:
+			if m.screen == "serverRegions" {
+				clickX := msg.X
+				clickY := msg.Y
+				// Estimate region tab position: ~2 lines for border+padding + 3 for title + 2 for search+blank = ~7 from box start
+				// Box starts after header art (~6) + status bar (~3) + newlines (~3) = ~12
+				headerLines := 12
+				tabY := headerLines + 7
+				tabEndY := tabY + 1
+				if clickY >= tabY && clickY < tabEndY {
+					regions := m.filteredRegionOrder()
+					if len(regions) == 0 {
+						break
+					}
+					// Measure X offset for the box: centered, ~2 chars border + 2 padding
+					boxStartX := 2
+					// Skip "  " prefix before region tabs
+					tabTextX := boxStartX + 2
+					relX := clickX - tabTextX
+					if relX < 0 {
+						relX = 0
+					}
+					// Each region entry: " │ [RegionName]" or " [RegionName]"
+					// Rough mapping: accumulate widths
+					cumX := 0
+					for i, r := range regions {
+						entryLen := len(r) + 4 // " [" + r + "] " or " " + r + " │ "
+						if i > 0 {
+							entryLen += 3 // " │ "
+						}
+						cumX += entryLen
+						if relX < cumX {
+							m.selectedRegion = r
+							m.selectedItem = 0
+							m.scrollOffset = 0
+							break
+						}
+					}
+					break
+				}
+				// Click on config item
+				visibleCfgs := m.filteredRegionConfigs()
+				total := len(visibleCfgs)
+				if total == 0 {
+					break
+				}
+				// Configs start after tabs + blank line + box padding
+				cfgStartY := tabEndY + 1
+				cfgEndY := cfgStartY + total
+				if clickY >= cfgStartY && clickY < cfgEndY {
+					idx := clickY - cfgStartY
+					if idx >= 0 && idx < total {
+						m.selectedItem = idx
+						m.ensureVisible()
+					}
+				}
+				break
+			}
+			// connectServer mouse handling
 			visible, offset, total := m.visibleConfigs()
 			if total == 0 {
 				break
 			}
-			// Use bottom-up calculation for Y offsets
-			// Bottom margin: ~7 lines (border bottom + help + scrollbar + empty + padding)
 			bottomMargin := 7
 			listStartY := m.termHeight - len(visible) - bottomMargin
 			listEndY := listStartY + len(visible)
@@ -533,7 +839,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) { // Remove pointer rece
 					m.ensureVisible()
 				}
 			} else if msg.Y == listEndY+1 {
-				// Click on the scroll bar area — jump based on X position
 				barWidth := m.termWidth - 30
 				if barWidth < 10 {
 					barWidth = 10
@@ -592,6 +897,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) { // Remove pointer rece
 			return m.updateIPChanger(msg)
 		case "xrayInfo":
 			return m.updateXrayInfo(msg)
+		case "serverRegions":
+			return m.updateServerRegions(msg)
 		}
 	}
 	return m, nil
@@ -606,7 +913,7 @@ func (m model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor--
 		}
 	case "down", "j":
-		if m.cursor < 6 {
+		if m.cursor < 7 {
 			m.cursor++
 		}
 	case "enter", " ":
@@ -619,6 +926,14 @@ func (m model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selectedItem = len(m.configs) - 1
 			if m.selectedItem < 0 {
 				m.selectedItem = 0
+			}
+			if len(m.configs) > 0 {
+				cfgs := make([]ConfigInfo, len(m.configs))
+				copy(cfgs, m.configs)
+				timeout := time.Duration(m.settingsPingTimeout) * time.Second
+				return m, func() tea.Msg {
+					return latencyStarted{total: len(cfgs), configs: cfgs, indices: nil, timeout: timeout, isTCP: true}
+				}
 			}
 		case 1:
 			m.screen = "addConfig"
@@ -640,6 +955,27 @@ func (m model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.screen = "xrayInfo"
 			m.cursor = 0
 		case 6:
+			m.screen = "serverRegions"
+			m.cursor = 0
+			m.selectedItem = 0
+			m.selectedRegion = ""
+			m.selectedConfigs = map[int]bool{}
+			m.configs = loadConfigs()
+			// Check if any configs still need detection
+			needsDetect := false
+			for _, cfg := range m.configs {
+				if cfg.Region == "" && cfg.Server != "Unknown" && cfg.Server != "" {
+					needsDetect = true
+					break
+				}
+			}
+			if needsDetect {
+				return m, func() tea.Msg {
+					return regionDetectionStarted{total: len(m.configs)}
+				}
+			}
+			return m, nil
+		case 7:
 			return m, tea.Quit
 		}
 	}
@@ -1111,14 +1447,24 @@ func (m model) updateConnectServer(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg {
 				binary, err := findXrayBinary()
 				if err != nil {
-					return latencyResult{server: cfg.Server, port: cfg.Port, ping: "ERR"}
+					return latencyResult{server: cfg.Server, port: cfg.Port, ping: "ERR", isReal: true}
 				}
 				latency, err := runXrayLatency(binary, cfg.Path, time.Duration(m.settingsPingTimeout)*time.Second, cfg.Server, cfg.Port)
 				ping := "ERR"
 				if err == nil {
 					ping = latency
 				}
-				return latencyResult{server: cfg.Server, port: cfg.Port, ping: ping}
+				return latencyResult{server: cfg.Server, port: cfg.Port, ping: ping, isReal: true}
+			}
+		}
+	case "P":
+		// Ping ALL configs (Shift+P) - full proxy test
+		filtered := m.filteredConfigs()
+		if !m.pinging && len(filtered) > 0 {
+			cfgs := make([]ConfigInfo, len(filtered))
+			copy(cfgs, filtered)
+			return m, func() tea.Msg {
+				return latencyStarted{total: len(cfgs), configs: cfgs, indices: nil, timeout: time.Duration(m.settingsPingTimeout) * time.Second}
 			}
 		}
 	case "c":
@@ -1271,6 +1617,222 @@ func (m model) updateXrayInfo(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			next = populateXrayInfo(next)
 			return next
 		}, false)
+	}
+	return m, nil
+}
+
+func (m model) filteredRegionOrder() []string {
+	all := m.buildRegionOrder()
+	q := strings.TrimSpace(m.searchInput.Value())
+	if q == "" {
+		return all
+	}
+	lowerQ := strings.ToLower(q)
+	var filtered []string
+	for _, r := range all {
+		if strings.Contains(strings.ToLower(r), lowerQ) {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
+}
+
+func (m model) filteredRegionConfigs() []ConfigInfo {
+	regions := m.buildRegionOrder()
+	if len(regions) == 0 {
+		return m.configs
+	}
+	sel := m.selectedRegion
+	if sel == "" {
+		sel = regions[0]
+	}
+	var result []ConfigInfo
+	for _, cfg := range m.configs {
+		r := cfg.Region
+		if r == "" {
+			r = "Unknown"
+		}
+		if r == sel {
+			result = append(result, cfg)
+		}
+	}
+	return result
+}
+
+func (m model) buildRegionOrder() []string {
+	seen := map[string]bool{}
+	var order []string
+	for _, cfg := range m.configs {
+		r := cfg.Region
+		if r == "" {
+			r = "Unknown"
+		}
+		if !seen[r] {
+			seen[r] = true
+			order = append(order, r)
+		}
+	}
+	return order
+}
+
+func (m model) updateServerRegions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Handle Space and Ctrl+A before anything else (even search or detection)
+	switch {
+	case msg.Type == tea.KeyCtrlA:
+		filtered := m.filteredRegionConfigs()
+		for i := range filtered {
+			m.selectedConfigs[i] = true
+		}
+		return m, nil
+	case msg.Type == tea.KeySpace:
+		filtered := m.filteredRegionConfigs()
+		flen := len(filtered)
+		if m.selectedItem >= 0 && m.selectedItem < flen {
+			m.selectedConfigs[m.selectedItem] = !m.selectedConfigs[m.selectedItem]
+		}
+		return m, nil
+	}
+	if m.showSearch {
+		var cmd tea.Cmd
+		switch msg.String() {
+		case "enter":
+			m.showSearch = false
+			m.searchInput.Blur()
+			regions := m.filteredRegionOrder()
+			if len(regions) > 0 {
+				found := false
+				for _, r := range regions {
+					if r == m.selectedRegion {
+						found = true
+						break
+					}
+				}
+				if !found {
+					m.selectedRegion = regions[0]
+				}
+			}
+			return m, nil
+		case "esc":
+			m.showSearch = false
+			m.searchInput.Blur()
+			m.searchInput.SetValue("")
+			regions := m.buildRegionOrder()
+			if m.selectedRegion == "" && len(regions) > 0 {
+				m.selectedRegion = regions[0]
+			}
+			return m, nil
+		case "ctrl+c":
+			return m, tea.Quit
+		}
+		m.searchInput, cmd = m.searchInput.Update(msg)
+		return m, cmd
+	}
+	switch msg.String() {
+	case "esc":
+		m.screen = "main"
+		m.cursor = 7
+	case "/":
+		m.showSearch = true
+		m.searchInput.Focus()
+		m.searchInput.SetValue("")
+		return m, nil
+	case "up", "k":
+		if m.selectedItem > 0 {
+			m.selectedItem--
+			m.ensureVisible()
+		}
+	case "down", "j":
+		flen := len(m.filteredRegionConfigs())
+		if m.selectedItem < flen-1 {
+			m.selectedItem++
+			m.ensureVisible()
+		}
+	case "left", "h", "tab":
+		regions := m.filteredRegionOrder()
+		if len(regions) == 0 {
+			return m, nil
+		}
+		cur := 0
+		for i, r := range regions {
+			if r == m.selectedRegion {
+				cur = i
+				break
+			}
+		}
+		cur--
+		if cur < 0 {
+			cur = len(regions) - 1
+		}
+		m.selectedRegion = regions[cur]
+		m.selectedItem = 0
+		m.selectedConfigs = map[int]bool{}
+		m.scrollOffset = 0
+	case "right", "l", "shift+tab":
+		regions := m.filteredRegionOrder()
+		if len(regions) == 0 {
+			return m, nil
+		}
+		cur := 0
+		for i, r := range regions {
+			if r == m.selectedRegion {
+				cur = i
+				break
+			}
+		}
+		cur++
+		if cur >= len(regions) {
+			cur = 0
+		}
+		m.selectedRegion = regions[cur]
+		m.selectedItem = 0
+		m.selectedConfigs = map[int]bool{}
+		m.scrollOffset = 0
+	case "home", "g":
+		m.selectedItem = 0
+		m.scrollOffset = 0
+	case "end", "G":
+		flen := len(m.filteredRegionConfigs())
+		if flen > 0 {
+			m.selectedItem = flen - 1
+			m.ensureVisible()
+		}
+	case "enter":
+		if m.detecting {
+			return m, nil
+		}
+		filtered := m.filteredRegionConfigs()
+		if len(filtered) > 0 && m.selectedItem < len(filtered) {
+			selectedConfig := filtered[m.selectedItem]
+			setActiveConfig(selectedConfig.Path)
+			m.configs = loadConfigs()
+			m.analysis = infoStyle.Render("🔄 Connecting to " + selectedConfig.Name + "...")
+			return m, m.connectToServer(selectedConfig)
+		}
+	case "c":
+		if m.detecting {
+			return m, nil
+		}
+		filtered := m.filteredRegionConfigs()
+		if len(filtered) > 0 && m.selectedItem >= 0 && m.selectedItem < len(filtered) {
+			cfg := filtered[m.selectedItem]
+			text := readConfigForCopy(cfg.Path)
+			if text != "" {
+				return m, func() tea.Msg {
+					clipboard.WriteAll(text)
+					return nil
+				}
+			}
+		}
+	case "r":
+		m.detecting = false
+		m.detectTotal = 0
+		m.detectDone = 0
+		m.detectCh = nil
+		m.configs = loadConfigs()
+		m.selectedRegion = ""
+		return m, func() tea.Msg {
+			return regionDetectionStarted{total: len(m.configs)}
+		}
 	}
 	return m, nil
 }
@@ -1587,6 +2149,8 @@ func (m model) View() string {
 		s.WriteString(m.viewDeleteConfirm(false))
 	case "confirmDeleteAll":
 		s.WriteString(m.viewDeleteConfirm(true))
+	case "serverRegions":
+		s.WriteString(m.viewServerRegions())
 	}
 
 	return s.String()
@@ -1905,8 +2469,9 @@ func (m model) renderConfigList(showSelection bool) string {
 			name = selectedItemStyle.Render(name)
 		}
 
-		ping := renderPing(cfg.Ping)
-		out.WriteString(fmt.Sprintf("%s%s %s%s %s (%s:%d) %s\n", cursor, marker, sel, status, name, cfg.Server, cfg.Port, ping))
+		realPing := renderPing(cfg.RealPing)
+		tcpPing := renderPing(cfg.Ping)
+		out.WriteString(fmt.Sprintf("%s%s %s%s %s (%s:%d) TCP:%s Real:%s\n", cursor, marker, sel, status, name, cfg.Server, cfg.Port, tcpPing, realPing))
 	}
 
 	// Scroll indicator
@@ -1949,6 +2514,7 @@ func (m model) viewMain() string {
 		"Settings",
 		"IP Changer",
 		"Xray Info",
+		"Sorter",
 		"Quit",
 	}
 	markers := []string{
@@ -1959,6 +2525,7 @@ func (m model) viewMain() string {
 		accentStyle.Render("5"),
 		accentStyle.Render("6"),
 		accentStyle.Render("7"),
+		accentStyle.Render("8"),
 	}
 
 	for i, choice := range choices {
@@ -2252,7 +2819,7 @@ func (m model) viewConnectServer() string {
 		s += "\n" + searchBar + "\n"
 	}
 
-	s += "\n↑/↓: Navigate | S+↑/↓: Multi-select | Space: Select | [ ]: Page | f: Filter | /: Search | i: Details | s: Set Active | Enter: Connect | p: Ping | t: Shell | c: Copy | d: Delete | a: All | D: Dupes | E: Errored | Esc: Back"
+	s += "\n↑/↓: Navigate | S+↑/↓: Multi-select | Space: Select | [ ]: Page | f: Filter | /: Search | i: Details | s: Set Active | Enter: Connect | p: Ping | P: Ping All | t: Shell | c: Copy | d: Delete | a: All | D: Dupes | E: Errored | Esc: Back"
 	s += m.renderFilterBar()
 
 	if m.analysis != "" {
@@ -2355,6 +2922,126 @@ func (m model) viewXrayInfo() string {
 	s += m.renderXrayInfo()
 	s += "\n\n"
 	s += dimStyle.Render("r: Refresh | Esc: Back to Main Menu")
+	width := responsiveWidth(m.termWidth, 80)
+	menuBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(catppuccinInactive)).
+		Padding(1, 2).
+		Width(width).
+		Render(s)
+
+	return menuBox
+}
+
+func (m model) viewServerRegions() string {
+	s := "Server Regions\n\n"
+
+	if len(m.configs) == 0 {
+		s += "No server configurations found.\n"
+		s += "Please add configurations first.\n\n"
+		s += dimStyle.Render("Esc: Back to Main Menu")
+		width := responsiveWidth(m.termWidth, 80)
+		menuBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color(catppuccinInactive)).
+			Padding(1, 2).
+			Width(width).
+			Render(s)
+		return menuBox
+	}
+
+	// Search bar
+	if m.showSearch {
+		width := responsiveWidth(m.termWidth, 80)
+		contentWidth := width - 8
+		if contentWidth < 30 {
+			contentWidth = 30
+		}
+		m.searchInput.Width = contentWidth - 4
+		searchLabel := accentStyle.Render("🔍 Search regions:")
+		s += searchLabel + " " + inputStyle.Render(m.searchInput.View()) + "\n\n"
+	} else {
+		s += dimStyle.Render("[/: Search regions]") + "\n\n"
+	}
+
+	regions := m.filteredRegionOrder()
+	selRegion := m.selectedRegion
+	if selRegion == "" && len(regions) > 0 {
+		selRegion = regions[0]
+	}
+
+	// Region tabs bar
+	var tabBar strings.Builder
+	tabBar.WriteString("  ")
+	for i, r := range regions {
+		sep := " "
+		if i > 0 {
+			sep = " │ "
+		}
+		tabBar.WriteString(sep)
+		if r == selRegion {
+			tabBar.WriteString(lipgloss.NewStyle().
+				Foreground(lipgloss.Color(catppuccinGreen)).
+				Bold(true).
+				Render("[" + r + "]"))
+		} else {
+			tabBar.WriteString(dimStyle.Render(r))
+		}
+	}
+	s += tabBar.String() + "\n\n"
+
+	filtered := m.filteredRegionConfigs()
+	var out strings.Builder
+	for i, cfg := range filtered {
+		cursor := "  "
+		marker := accentStyle.Render(fmt.Sprintf("%d", i+1))
+		status := dimStyle.Render("●")
+		if cfg.Active {
+			status = successStyle.Render("●")
+		}
+		if m.selectedItem == i {
+			cursor = accentStyle.Render("> ")
+		}
+		name := cfg.Name
+		if m.selectedItem == i {
+			name = selectedItemStyle.Render(name)
+		}
+		sel := "[ ]"
+		if m.selectedConfigs[i] {
+			sel = "[x]"
+		}
+		realPing := renderPing(cfg.RealPing)
+		tcpPing := renderPing(cfg.Ping)
+		line := fmt.Sprintf("%s%s %s %s %s  %s:%d  TCP:%s  Real:%s\n",
+			cursor, marker, sel, status, name, cfg.Server, cfg.Port, tcpPing, realPing)
+		out.WriteString(line)
+	}
+
+	s += out.String()
+
+	if m.detecting {
+		progress := fmt.Sprintf("  %s Detecting regions... [%d/%d]", m.spinner.View(), m.detectDone, m.detectTotal)
+		s += "\n" + infoStyle.Render(progress) + "\n"
+	}
+
+	if m.analysis != "" {
+		s += "\n\n"
+		resultBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color(catppuccinBlue)).
+			Padding(1, 2).
+			Width(clamp(40, responsiveWidth(m.termWidth, 80)-6, 120)).
+			Render(m.analysis)
+		s += resultBox
+	}
+
+	selCount := len(m.selectedConfigs)
+	if selCount > 0 {
+		s += "\n" + infoStyle.Render(fmt.Sprintf("  [%d selected]", selCount))
+	}
+
+	s += "\n\n←/→: Switch Region | ↑/↓: Nav | Space: Select | Ctrl+A: All | Enter: Connect | c: Copy | r: Refresh | Esc: Back"
+
 	width := responsiveWidth(m.termWidth, 80)
 	menuBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -2605,12 +3292,14 @@ func (m model) parseInput(input string) string {
 		return m.parseTrojanURL(input)
 	} else if strings.HasPrefix(input, "ss://") {
 		return m.parseShadowsocksURL(input)
+	} else if strings.HasPrefix(input, "hysteria2://") || strings.HasPrefix(input, "hy2://") {
+		return m.parseHysteria2URL(input)
 	} else if strings.HasPrefix(input, "{") {
 		// Try to parse as JSON
 		return m.parseJSONConfig(input)
 	}
 
-	return errorStyle.Render("❌ Unsupported format. Please paste a valid vless://, vmess://, trojan://, ss:// URL or JSON config.")
+	return errorStyle.Render("❌ Unsupported format. Please paste a valid vless://, vmess://, trojan://, ss://, hysteria2:// URL or JSON config.")
 }
 
 // Parse VLESS URL
@@ -2719,6 +3408,33 @@ func (m model) parseShadowsocksURL(ssURL string) string {
 
 	return fmt.Sprintf("✅ %s\n📡 Protocol: Shadowsocks\n🖥️  Server: %s\n🔌 Port: %s", 
 		successStyle.Render("Valid Shadowsocks configuration"), serverName, port)
+}
+
+// Parse Hysteria2 URL
+func (m model) parseHysteria2URL(hysteria2URL string) string {
+	configJSON := m.convertHysteria2ToJSON(hysteria2URL)
+	if strings.Contains(configJSON, "❌") {
+		return configJSON
+	}
+
+	// Extract server info for display
+	parsedURL, err := url.Parse(hysteria2URL)
+	if err != nil {
+		return errorStyle.Render("❌ Invalid Hysteria2 URL format")
+	}
+
+	serverName := parsedURL.Hostname()
+	port := parsedURL.Port()
+	if port == "" {
+		port = "443"
+	}
+
+	// Generate config name
+	m.currentName = generateConfigName("hysteria2", serverName, port)
+	m.configBuffer = configJSON
+
+	return fmt.Sprintf("✅ %s\n📡 Protocol: Hysteria2\n🖥️  Server: %s\n🔌 Port: %s", 
+		successStyle.Render("Valid Hysteria2 configuration"), serverName, port)
 }
 
 // Parse JSON config
@@ -3029,6 +3745,100 @@ func (m model) convertShadowsocksToJSON(ssURL string) string {
 	return string(jsonBytes)
 }
 
+func (m model) convertHysteria2ToJSON(hysteria2URL string) string {
+	parsedURL, err := url.Parse(hysteria2URL)
+	if err != nil {
+		return errorStyle.Render("❌ Invalid Hysteria2 URL format")
+	}
+
+	password := ""
+	if parsedURL.User != nil {
+		password = parsedURL.User.Username()
+	}
+	serverName := parsedURL.Hostname()
+	port := parsedURL.Port()
+	if port == "" {
+		port = "443"
+	}
+
+	portInt := 443
+	fmt.Sscanf(port, "%d", &portInt)
+
+	// Parse query parameters
+	query := parsedURL.Query()
+	insecure := query.Get("insecure")
+	allowInsecure := false
+	if insecure == "1" || insecure == "true" {
+		allowInsecure = true
+	}
+	sni := query.Get("sni")
+	if sni == "" {
+		sni = serverName
+	}
+	obfs := query.Get("obfs")
+	obfsPassword := query.Get("obfs-password")
+
+	xrayConfig := map[string]interface{}{
+		"log": map[string]interface{}{
+			"loglevel": "warning",
+		},
+		"inbounds": []interface{}{
+			map[string]interface{}{
+				"tag":      "socks",
+				"port":     1080,
+				"protocol": "socks",
+				"settings": map[string]interface{}{
+					"auth":      "noauth",
+					"udp":       true,
+					"userLevel": 8,
+				},
+			},
+			map[string]interface{}{
+				"tag":      "http",
+				"port":     1087,
+				"protocol": "http",
+				"settings": map[string]interface{}{
+					"userLevel": 8,
+				},
+			},
+		},
+		"outbounds": []interface{}{
+			map[string]interface{}{
+				"tag":      "proxy",
+				"protocol": "hysteria2",
+				"settings": map[string]interface{}{
+					"servers": []interface{}{
+						map[string]interface{}{
+							"address":       serverName,
+							"port":          portInt,
+							"password":      password,
+							"serverName":    sni,
+							"allowInsecure": allowInsecure,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Add obfuscation settings if provided
+	if obfs != "" {
+		settings := xrayConfig["outbounds"].([]interface{})[0].(map[string]interface{})["settings"].(map[string]interface{})
+		server := settings["servers"].([]interface{})[0].(map[string]interface{})
+		server["obfs"] = obfs
+		if obfsPassword != "" {
+			server["obfsPassword"] = obfsPassword
+		}
+	}
+
+	jsonBytes, err := json.MarshalIndent(xrayConfig, "", "  ")
+	if err != nil {
+		return errorStyle.Render("❌ Failed to generate JSON configuration")
+	}
+
+	return string(jsonBytes)
+}
+
 // Helper function to create stream settings for VMess
 func createStreamSettings(network, streamType, host, path, tls string) map[string]interface{} {
 	streamSettings := map[string]interface{}{
@@ -3158,7 +3968,7 @@ func loadConfigs() []ConfigInfo {
 
 	for _, file := range files {
 		base := filepath.Base(file)
-		if base == "ping_cache.json" || base == "settings.json" {
+		if base == "ping_cache.json" || base == "region_cache.json" || base == "settings.json" {
 			continue
 		}
 		// Read the config file
@@ -3235,6 +4045,7 @@ func loadConfigs() []ConfigInfo {
 	}
 
 	configs = applyPingCache(configs, loadPingCache())
+	configs = applyRegionCache(configs, loadRegionCache())
 	sort.SliceStable(configs, func(i, j int) bool {
 		return parsePingMs(configs[i].Ping) < parsePingMs(configs[j].Ping)
 	})
@@ -3265,11 +4076,49 @@ func savePingCache(cache map[string]string) {
 	os.WriteFile(pingCachePath(), data, 0644)
 }
 
+func regionCachePath() string {
+	return filepath.Join(os.Getenv("HOME"), ".config", "xray-configs", "region_cache.json")
+}
+
+func loadRegionCache() map[string]string {
+	cache := map[string]string{}
+	data, err := os.ReadFile(regionCachePath())
+	if err != nil {
+		return cache
+	}
+	json.Unmarshal(data, &cache)
+	return cache
+}
+
+func saveRegionCache(cache map[string]string) {
+	data, err := json.MarshalIndent(cache, "", "  ")
+	if err != nil {
+		return
+	}
+	dir := filepath.Dir(regionCachePath())
+	os.MkdirAll(dir, 0755)
+	os.WriteFile(regionCachePath(), data, 0644)
+}
+
+func applyRegionCache(configs []ConfigInfo, cache map[string]string) []ConfigInfo {
+	for i, cfg := range configs {
+		key := fmt.Sprintf("%s:%d", cfg.Server, cfg.Port)
+		if val, ok := cache[key]; ok {
+			configs[i].Region = val
+		}
+	}
+	return configs
+}
+
 func applyPingCache(configs []ConfigInfo, cache map[string]string) []ConfigInfo {
 	for i, cfg := range configs {
 		key := fmt.Sprintf("%s:%d", cfg.Server, cfg.Port)
 		if val, ok := cache[key]; ok {
 			configs[i].Ping = val
+		}
+		realKey := key + ":real"
+		if val, ok := cache[realKey]; ok {
+			configs[i].RealPing = val
 		}
 	}
 	return configs
@@ -3506,7 +4355,9 @@ func importSubscription(urlStr string) (int, error) {
 		if strings.HasPrefix(line, "vmess://") || 
 		   strings.HasPrefix(line, "vless://") || 
 		   strings.HasPrefix(line, "trojan://") || 
-		   strings.HasPrefix(line, "ss://") {
+		   strings.HasPrefix(line, "ss://") ||
+		   strings.HasPrefix(line, "hysteria2://") ||
+		   strings.HasPrefix(line, "hy2://") {
 			if saveConfigLineStandalone(line) {
 				saved++
 			}
@@ -3738,6 +4589,20 @@ func runXrayLatency(binary, configPath string, timeout time.Duration, server str
 	return fmt.Sprintf("%dms", ms), nil
 }
 
+func tcpPingLatency(server string, port int, timeout time.Duration) (string, error) {
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", server, port), timeout)
+	if err != nil {
+		return "", err
+	}
+	conn.Close()
+	ms := time.Since(start).Milliseconds()
+	if ms < 1 {
+		ms = 1
+	}
+	return fmt.Sprintf("%dms", ms), nil
+}
+
 func estimateProxyOverhead(configPath string) int64 {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -3756,6 +4621,8 @@ func estimateProxyOverhead(configPath string) int64 {
 		overhead += 25
 	} else if strings.Contains(content, "shadowsocks") {
 		overhead += 15
+	} else if strings.Contains(content, "hysteria2") {
+		overhead += 20
 	}
 
 	// Transport overhead
@@ -3852,6 +4719,16 @@ func (m model) saveConfigLine(line string) bool {
 		if configName != "" {
 			filename = configName + ".json"
 		}
+	} else if strings.HasPrefix(line, "hysteria2://") || strings.HasPrefix(line, "hy2://") {
+		configName := extractNameFromLine(line)
+		u, err := url.Parse(line)
+		port := ""
+		if err == nil && u.Port() != "" {
+			port = "_" + u.Port()
+		}
+		if configName != "" {
+			filename = configName + port + ".json"
+		}
 	}
 
 	if filename == "" {
@@ -3868,6 +4745,8 @@ func (m model) saveConfigLine(line string) bool {
 		configData = []byte(m.convertTrojanToJSON(line))
 	} else if strings.HasPrefix(line, "ss://") {
 		configData = []byte(m.convertShadowsocksToJSON(line))
+	} else if strings.HasPrefix(line, "hysteria2://") || strings.HasPrefix(line, "hy2://") {
+		configData = []byte(m.convertHysteria2ToJSON(line))
 	} else if strings.HasPrefix(line, "{") {
 		configData = []byte(line)
 	}
@@ -3875,7 +4754,8 @@ func (m model) saveConfigLine(line string) bool {
 	if len(configData) > 0 {
 		// Embed original URL for clipboard copy
 		if strings.HasPrefix(line, "vless://") || strings.HasPrefix(line, "vmess://") ||
-			strings.HasPrefix(line, "trojan://") || strings.HasPrefix(line, "ss://") {
+			strings.HasPrefix(line, "trojan://") || strings.HasPrefix(line, "ss://") ||
+			strings.HasPrefix(line, "hysteria2://") || strings.HasPrefix(line, "hy2://") {
 			var cfgMap map[string]interface{}
 			if json.Unmarshal(configData, &cfgMap) == nil {
 				cfgMap["_origin_url"] = line
@@ -3902,6 +4782,13 @@ func extractNameFromLine(line string) string {
 		vmess, err := decodeVmessURL(line)
 		if err == nil && vmess.PS != "" {
 			return vmess.PS
+		}
+	}
+	if strings.HasPrefix(line, "hysteria2://") || strings.HasPrefix(line, "hy2://") {
+		u, err := url.Parse(line)
+		if err == nil && u.Fragment != "" {
+			name, _ := url.QueryUnescape(u.Fragment)
+			return name
 		}
 	}
 	return ""
@@ -4027,6 +4914,12 @@ func (m model) parseMultipleConfigs(lines []string) string {
 			result = m.parseVlessURL(line)
 		case strings.HasPrefix(line, "vmess://"):
 			result = m.parseVmessURL(line)
+		case strings.HasPrefix(line, "trojan://"):
+			result = m.parseTrojanURL(line)
+		case strings.HasPrefix(line, "ss://"):
+			result = m.parseShadowsocksURL(line)
+		case strings.HasPrefix(line, "hysteria2://") || strings.HasPrefix(line, "hy2://"):
+			result = m.parseHysteria2URL(line)
 		case strings.HasPrefix(line, "{"):
 			result = m.parseJSONConfig(line)
 		default:
