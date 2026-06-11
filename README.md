@@ -1,13 +1,5 @@
 <div align="center">
-```
-██╗  ██╗██████╗  █████╗ ██╗   ██╗
-╚██╗██╔╝██╔══██╗██╔══██╗╚██╗ ██╔╝
- ╚███╔╝ ██████╔╝███████║ ╚████╔╝
- ██╔██╗ ██╔══██╗██╔══██║  ╚██╔╝
-██╔╝ ██╗██║  ██║██║  ██║   ██║
-╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝
-```
-  <h2 align="center">
+  <h2>
     <span style="color: #d3869b; font-family: monospace; font-size: 1.6em;">❝ Xray Manager ❞</span>
   </h2>
   <p style="font-size: 1.1em; color: #83a598; margin-top: 5px;">
