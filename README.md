@@ -7,7 +7,11 @@
 ██╔╝ ██╗██║  ██║██║  ██║   ██║
 ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝
   </pre>
-  <h1 style="color: #d3869b; font-size: 2.2em; margin: 0;">Xray Manager</h1>
+  <h1 style="color: #d3869b; font-size: 2.2em; margin: 0; overflow: hidden; white-space: nowrap; border-right: 3px solid #d3869b; width: 0; animation: typing 2.5s steps(12) forwards, blink 0.75s step-end infinite;">Xray Manager</h1>
+  <style>
+    @keyframes typing { from { width: 0; } to { width: 12ch; } }
+    @keyframes blink { 50% { border-color: transparent; } }
+  </style>
   <p style="font-size: 1.1em; color: #83a598; margin-top: 5px;">
     <strong>A beautiful TUI for managing Xray proxy configurations with a built-in Tor IP changer</strong>
   </p>
@@ -206,33 +210,6 @@ sudo ./xray-app --ipchanger-mode    # Run in IP changer mode directly
 - **[Catppuccin Jade](https://catppuccin.com/)** — Beautiful color palette
 - **[Xray-core](https://github.com/XTLS/Xray-core)** — The proxy core
 
----
-
-## 📸 Screenshots
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│        ██╗  ██╗██████╗  █████╗ ██╗   ██╗                    │
-│        ╚██╗██╔╝██╔══██╗██╔══██╗╚██╗ ██╔╝                    │
-│         ╚███╔╝ ██████╔╝███████║ ╚████╔╝                     │
-│         ██╔██╗ ██╔══██╗██╔══██║  ╚██╔╝                      │
-│        ██╔╝ ██╗██║  ██║██║  ██║   ██║                       │
-│        ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝                       │
-│ Core: RUNNING  Active: my_config  |  14:30:25                │
-├──────────────────────────────────────────────────────────────┤
-│                     Connect to Server                        │
-│                                                              │
-│  > 1 ● vless_US_443_143025  (192.168.1.1:443)  TCP:45ms      │
-│    2 ● vmess_DE_443_143025  (10.0.0.1:443)     TCP:89ms      │
-│    3   trojan_JP_443_143025 (203.0.113.1:443)  TCP:ERR       │
-│    4 ● ss_HK_8388_143025    (198.51.100.1:8388) TCP:120ms    │
-│                                                              │
-│ ─────────────────────────●──────────────────── 4/4 (100%)    │
-│ Filter: all (4/4)  [f: change]                               │
-│                                                              │
-│ ↑/↓: Navigate | Enter: Connect | p: Ping | /: Search | ...  │
-└──────────────────────────────────────────────────────────────┘
-```
 
 ---
 
