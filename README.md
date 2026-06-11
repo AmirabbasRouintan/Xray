@@ -88,59 +88,13 @@ go run .
 8  Quit           — Exit the application
 ```
 
-### Connect Screen
-
-| Key | Action |
-|-----|--------|
-| `↑/↓` or `k/j` | Navigate configs |
-| `Enter` | Connect to selected config |
-| `Space` | Toggle multi-select |
-| `Ctrl+A` | Select all |
-| `s` | Set as active config |
-| `i` | View config details |
-| `c` | Copy config to clipboard |
-| `p` | Ping selected config |
-| `P` | Ping all configs |
-| `t` | Open shell with proxy env |
-| `d` | Delete selected |
-| `a` | Delete all |
-| `D` | Delete duplicates |
-| `E` | Delete errored configs |
-| `/` | Search configs |
-| `f` | Filter (all/working/errored/unpinged) |
-| `[` / `]` | Page up / down |
-| `Mouse wheel` | Scroll through configs |
-
-### Sorter Screen (Regions)
-
-| Key | Action |
-|-----|--------|
-| `←/→` or `Tab/Shift+Tab` | Switch between regions |
-| `↑/↓` or `k/j` | Navigate configs |
-| `Space` | Toggle selection |
-| `Ctrl+A` | Select all in region |
-| `Enter` | Connect to selected config |
-| `c` | Copy config to clipboard |
-| `r` | Re-detect regions |
-| `/` | Search/filter regions |
-
-### Add Config Screen
+### Add Config
 
 | Option | Description |
 |--------|-------------|
-| **Paste Config** | Supports `vless://`, `vmess://`, `trojan://`, `ss://`, `hysteria2://` URLs and JSON (press `Ctrl+Enter` to analyze) |
-| **Manual SOCKS** | Step-by-step SOCKS proxy creation (IP, port, optional auth) |
+| **Paste Config** | Paste `vless://`, `vmess://`, `trojan://`, `ss://`, `hysteria2://` URLs or JSON |
+| **Manual SOCKS** | Step-by-step SOCKS proxy creation |
 | **Load JSON File** | Import from a local `.json` file |
-
-### Subscription Manager
-
-| Key | Action |
-|-----|--------|
-| `Enter` | Import and save subscription |
-| `Tab` | Toggle between URL input and saved subscriptions |
-| `d` | Delete selected subscription |
-| `Ctrl+V` | Paste URL |
-| `↑/↓` | Navigate saved subscriptions |
 
 ### Settings
 
