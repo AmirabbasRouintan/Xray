@@ -31,7 +31,6 @@
 | 🔄 **IP Changer** | Launch a Tor-based IP rotation tool with custom intervals |
 | 🔍 **Config Details** | View full JSON, copy to clipboard, or export as shareable link |
 | 🔎 **Search & Filter** | Search by name/server/protocol, filter by working/errored/unpinged |
-| 🖱️ **Mouse Support** | Full mouse support for navigation and scrolling |
 
 </div>
 
