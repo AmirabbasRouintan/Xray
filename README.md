@@ -26,6 +26,8 @@
 
 ## ✨ Features
 
+<div align="center">
+
 | Feature | Description |
 |---------|-------------|
 | 🖥️ **Interactive TUI** | Navigate, manage, and connect to Xray proxy configs using keyboard and mouse |
@@ -38,6 +40,8 @@
 | 🔍 **Config Details** | View full JSON, copy to clipboard, or export as shareable link |
 | 🔎 **Search & Filter** | Search by name/server/protocol, filter by working/errored/unpinged |
 | 🖱️ **Mouse Support** | Full mouse support for navigation and scrolling |
+
+</div>
 
 ---
 
@@ -88,19 +92,27 @@ go run .
 
 ### Add Config
 
+<div align="center">
+
 | Option | Description |
 |--------|-------------|
 | **Paste Config** | Paste `vless://`, `vmess://`, `trojan://`, `ss://`, `hysteria2://` URLs or JSON |
 | **Manual SOCKS** | Step-by-step SOCKS proxy creation |
 | **Load JSON File** | Import from a local `.json` file |
 
+</div>
+
 ### Settings
+
+<div align="center">
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | HTTP Port | `10808` | Local HTTP inbound port when connecting |
 | SOCKS Port | `10809` | Local SOCKS inbound port when connecting |
 | Ping Timeout | `8s` | Timeout per ping request |
+
+</div>
 
 ---
 
@@ -142,6 +154,8 @@ sudo ./xray-app --ipchanger-mode    # Run in IP changer mode directly
 
 ## 🧠 Supported Protocols
 
+<div align="center">
+
 | Protocol | URL Format | Status |
 |----------|-----------|--------|
 | **VLESS** | `vless://` | ✅ Full support |
@@ -151,6 +165,8 @@ sudo ./xray-app --ipchanger-mode    # Run in IP changer mode directly
 | **Hysteria2** | `hysteria2://` / `hy2://` | ✅ Full support |
 | **JSON Config** | Raw JSON | ✅ Full support |
 | **SOCKS** | Manual entry | ✅ Full support |
+
+</div>
 
 ---
 
@@ -195,5 +211,5 @@ This project is [MIT](LICENSE) licensed.
     </a>
   </p>
   <br>
-  <sub>Built with ❤️ using Go and Bubble Tea</sub>
+  
 </div>
