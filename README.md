@@ -7,11 +7,9 @@
 ██╔╝ ██╗██║  ██║██║  ██║   ██║
 ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝
   </pre>
-  <h1 style="color: #d3869b; font-size: 2.2em; margin: 0; overflow: hidden; white-space: nowrap; border-right: 3px solid #d3869b; width: 0; animation: typing 2.5s steps(12) forwards, blink 0.75s step-end infinite;">Xray Manager</h1>
-  <style>
-    @keyframes typing { from { width: 0; } to { width: 12ch; } }
-    @keyframes blink { 50% { border-color: transparent; } }
-  </style>
+  <h2 align="center">
+    <span style="color: #d3869b; font-family: monospace; font-size: 1.6em;">❝ Xray Manager ❞</span>
+  </h2>
   <p style="font-size: 1.1em; color: #83a598; margin-top: 5px;">
     <strong>A beautiful TUI for managing Xray proxy configurations with a built-in Tor IP changer</strong>
   </p>
