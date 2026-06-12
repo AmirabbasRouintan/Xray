@@ -6,7 +6,7 @@ This repository contains a Go-based terminal UI (TUI) for managing Xray proxy co
 ## Key components
 - `main.go`: Bubble Tea TUI for managing Xray configs, launching Tor IP changer, and controlling the Xray process.
 - `ipchanger.go`: Tor installer/configurer and IP rotation tool, used by the TUI when running in IP changer mode.
-- `xrayyyy`: Shell launcher to run the app from source via `go run .`.
+- `go run .`: Run the app from source.
 - `xray-manager`: Built Go binary of the TUI (ELF executable).
 - `go.mod` / `go.sum`: Go module metadata and dependency lock files.
 
@@ -30,14 +30,13 @@ This repository contains a Go-based terminal UI (TUI) for managing Xray proxy co
 - Supports fixed or infinite IP rotation with interval prompts.
 
 ## Notes for agents
-- Use `go run .` or the `xrayyyy` script for local execution.
+- Use `go run .` for local execution.
 - Root privileges are required for Tor setup and IP changer operations.
 - The file `fix_analyze.patch` includes a potential refactor for parsing config inputs; it is not applied by default.
 - The `xray-manager` binary is derived from this source; prefer editing Go files instead of the binary.
 
 ## Common commands
 - `go run .`: Run the TUI from source.
-- `./xrayyyy`: Run the TUI via the launcher script.
 - `./xray-manager`: Run the compiled binary.
 
 ## TODOs / extension points
